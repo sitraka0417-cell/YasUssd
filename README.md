@@ -1,3 +1,8 @@
 # Yas USSD
-App Android (Kotlin) : solde crédit/forfait, offres enregistrées, USSD multi-étapes automatique, rappel de fin de forfait.
+App Android (Kotlin, sans bibliothèque externe).
+
+- Accueil épuré : **Solde** (`#357#`) et **Offres** (`#359#`).
+- Offres : la liste est lue automatiquement (`#359#` puis `1`), puis un appui sur une offre envoie `1 → numéro de l'offre → 1` et affiche le forfait restant.
+- Paramètres (icône engrenage) : SIM, accessibilité, codes, rappel de fin de forfait, code libre, autorisations.
+
 Build : GitHub Actions (onglet Actions > Build APK > Artifacts > YasUssd-debug-apk).

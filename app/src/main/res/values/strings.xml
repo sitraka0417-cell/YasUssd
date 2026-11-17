@@ -1,3 +1,4 @@
 <resources>
+    <string name="app_name">Yas USSD</string>
     <string name="acc_desc">Lit les fenêtres USSD de l\'opérateur et répond automatiquement aux menus lancés depuis cette application, uniquement.</string>
 </resources>

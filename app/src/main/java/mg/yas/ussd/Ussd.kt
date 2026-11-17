@@ -15,7 +15,8 @@ import android.telephony.TelephonyManager
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class Offer(val name: String, val code: String, val replies: String)
+/** Une ligne numérotée d'un menu USSD (ex : « 1 » + « Yas Mi-Net 1 Go »). */
+data class MenuItem(val num: String, val label: String)
 
 object Store {
     private fun p(c: Context) = c.getSharedPreferences("yas", Context.MODE_PRIVATE)
@@ -26,26 +27,36 @@ object Store {
     fun subId(c: Context): Int = p(c).getInt("sub", -1)
     fun setSubId(c: Context, v: Int) = p(c).edit().putInt("sub", v).apply()
 
-    fun offers(c: Context): MutableList<Offer> {
-        val out = mutableListOf<Offer>()
+    /** Réglage texte : valeur par défaut si rien (ou du vide) n'est enregistré. */
+    fun cfg(c: Context, k: String, d: String): String {
+        val v = get(c, k, d).trim()
+        return if (v.isEmpty()) d else v
+    }
+
+    fun menu(c: Context): List<MenuItem> {
+        val out = mutableListOf<MenuItem>()
         try {
-            val a = JSONArray(get(c, "offers", "[]"))
+            val a = JSONArray(get(c, "menu", "[]"))
             for (i in 0 until a.length()) {
                 val o = a.getJSONObject(i)
-                out.add(Offer(o.getString("n"), o.getString("c"), o.optString("r")))
+                out.add(MenuItem(o.getString("n"), o.getString("t")))
             }
         } catch (_: Exception) {}
         return out
     }
 
-    fun saveOffers(c: Context, l: List<Offer>) {
+    fun saveMenu(c: Context, l: List<MenuItem>) {
         val a = JSONArray()
-        l.forEach { a.put(JSONObject().put("n", it.name).put("c", it.code).put("r", it.replies)) }
-        put(c, "offers", a.toString())
+        l.forEach { a.put(JSONObject().put("n", it.num).put("t", it.label)) }
+        put(c, "menu", a.toString())
+        putLong(c, "menu_time", System.currentTimeMillis())
     }
 }
 
 object Ussd {
+    const val MODE_RESULT = 0
+    const val MODE_MENU = 1
+
     private val main = Handler(Looper.getMainLooper())
     private lateinit var app: Context
     val queue = ArrayDeque<String>()
@@ -53,17 +64,36 @@ object Ussd {
     var lastSig = ""
     var onResult: (() -> Unit)? = null
     private var title = ""
+    private var mode = MODE_RESULT
     private var dialed = false
     private val timeout = Runnable { finish("Délai dépassé : aucune réponse de l'opérateur.") }
 
-    fun run(ctx: Context, title: String, code: String, replies: String) {
+    private val menuLine = Regex("""^\s*(\d{1,2})\s*(?:[.:\-)\]]\s*|\s+)(.+?)\s*$""")
+
+    /** Extrait les lignes numérotées d'un menu, sans « retour », « suivant », etc. */
+    fun parseMenu(text: String): List<MenuItem> {
+        val out = mutableListOf<MenuItem>()
+        for (line in text.lines()) {
+            val m = menuLine.find(line) ?: continue
+            val n = m.groupValues[1]
+            val t = m.groupValues[2]
+            val low = t.lowercase()
+            if (n == "0" || n == "00") continue
+            if (low.contains("retour") || low.contains("suivant") || low.contains("précédent") || low.contains("precedent")) continue
+            out.add(MenuItem(n, t))
+        }
+        return out
+    }
+
+    fun run(ctx: Context, title: String, code: String, replies: String, mode: Int = MODE_RESULT) {
         app = ctx.applicationContext
         this.title = title
+        this.mode = mode
         lastSig = ""
         queue.clear()
         replies.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach { queue.addLast(it) }
         if (app.checkSelfPermission(Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
-            finish("Autorisation d'appel manquante. Accordez-la dans les paramètres de l'application.")
+            finish("Autorisation d'appel manquante. Accordez-la dans Paramètres > Autorisations.")
             return
         }
         val subId = Store.subId(app)
@@ -96,7 +126,7 @@ object Ussd {
     private fun dial(code: String, subId: Int) {
         if (UssdService.instance == null) {
             if (queue.isNotEmpty()) {
-                finish("Activez d'abord le service d'accessibilité (bouton en haut) pour les offres à plusieurs étapes.")
+                finish("Activez d'abord le service d'accessibilité (Paramètres > Service d'accessibilité) pour les offres à plusieurs étapes.")
                 return
             }
             active = false
@@ -128,9 +158,21 @@ object Ussd {
         main.removeCallbacks(timeout)
         active = false
         queue.clear()
+
+        // Mode « liste d'offres » : on mémorise le menu ; sinon (ou si rien n'a pu être lu) on affiche le texte brut.
+        var show = true
+        if (mode == MODE_MENU) {
+            val items = parseMenu(text)
+            if (items.isNotEmpty()) {
+                Store.saveMenu(app, items)
+                show = false
+            }
+        }
         Store.put(app, "last_text", text)
         Store.put(app, "last_title", title)
         Store.putLong(app, "last_time", System.currentTimeMillis())
+        Store.put(app, "unseen", if (show) "1" else "0")
+
         if (dialed) {
             dialed = false
             try {
