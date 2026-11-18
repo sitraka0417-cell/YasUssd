@@ -1,7 +1,7 @@
 # Yas USSD 3.0 (v4)
 App Android (Kotlin, sans bibliothèque externe).
 
-- **Accueil** : deux cartes, *Solde* (`#357#`) et *forfait restant* de l'offre choisie (`#359#` puis `1 → n° → 1`).
+- **Accueil** : cartes *Solde* (`#357#`) et *forfait restant*, puis la liste des offres juste dessous (un appui sur une offre la sélectionne).
   Le texte affiché est la copie du résultat de l'opérateur ; appui long = copier.
 - **Mise à jour automatique** à chaque ouverture de l'appli (même si elle était restée en arrière-plan), au plus
   une fois toutes les 20 s ; boutons ↻ pour forcer. En cas d'échec, le dernier bon résultat reste affiché avec un avertissement.

@@ -4,7 +4,6 @@ import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.PixelFormat
-import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -18,7 +17,6 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.LinearLayout
 import android.widget.ProgressBar
-import android.widget.TextView
 
 /**
  * Pilote la fenêtre USSD du système pendant qu'un écran de chargement (propre à l'appli) la recouvre.
@@ -31,7 +29,7 @@ class UssdService : AccessibilityService() {
         private val CANCEL = listOf("annuler", "cancel", "fermer", "close", "dismiss", "ok")
         private val BTN_WORDS = setOf("ok", "envoyer", "send", "annuler", "cancel", "répondre", "repondre", "reply", "fermer", "close", "dismiss")
         private val PROGRESS = Regex("(?i)(en cours|running|veuillez patienter|please wait|chargement|loading|ex[ée]cution)")
-        private const val POLL_MS = 450L
+        private const val POLL_MS = 150L
         private const val MAX_ATTEMPTS = 8
     }
 
@@ -86,7 +84,7 @@ class UssdService : AccessibilityService() {
     override fun onAccessibilityEvent(e: AccessibilityEvent?) {
         if (!Ussd.capturing) return
         h.removeCallbacks(kick)
-        h.postDelayed(kick, 200)
+        h.postDelayed(kick, 60)
     }
 
     // ───────────────────────── cycle d'un code ─────────────────────────
@@ -101,7 +99,7 @@ class UssdService : AccessibilityService() {
         quietMsg = ""
         showOverlay(title)
         h.removeCallbacks(poll)
-        h.postDelayed(poll, 700)
+        h.postDelayed(poll, 250)
     }
 
     /** Fin du lot : on referme une éventuelle fenêtre restée ouverte puis on retire l'écran de chargement. */
@@ -109,8 +107,8 @@ class UssdService : AccessibilityService() {
         h.removeCallbacks(poll)
         h.removeCallbacks(kick)
         dismissNow()
-        h.postDelayed({ dismissNow() }, 350)
-        scheduleHide(900)
+        h.postDelayed({ dismissNow() }, 200)
+        scheduleHide(450)
     }
 
     /** Ferme la fenêtre USSD si elle est encore à l'écran. */
@@ -210,6 +208,7 @@ class UssdService : AccessibilityService() {
         val reply = Ussd.queue.firstOrNull()
         if (edit != null && reply != null) {
             Journal.add("Menu : ${msg.replace("\n", " ⏎ ").take(110)}")
+            Ussd.onMenu(msg)
             sendReply(s, edit, reply, msg)
             return
         }
@@ -248,7 +247,7 @@ class UssdService : AccessibilityService() {
                 Journal.add("Bouton Envoyer introuvable ou refusé (essai $attempts)")
                 if (attempts >= MAX_ATTEMPTS) Ussd.fail("Impossible de valider la réponse dans la fenêtre USSD.")
             }
-        }, 250)
+        }, 120)
     }
 
     private fun closeDialog(s: Scan) {
@@ -260,7 +259,6 @@ class UssdService : AccessibilityService() {
     // ───────────────────────── écran de chargement ─────────────────────────
 
     private var overlay: View? = null
-    private var overlayTitle: TextView? = null
     private val hideRun = Runnable { removeOverlayNow() }
     private val failsafe = Runnable {
         Journal.add("Écran de chargement retiré par sécurité")
@@ -276,7 +274,6 @@ class UssdService : AccessibilityService() {
         h.removeCallbacks(hideRun)
         h.removeCallbacks(failsafe)
         h.postDelayed(failsafe, 60000)
-        overlayTitle?.text = title
         if (overlay != null) return
         try {
             val d = resources.displayMetrics.density
@@ -289,29 +286,6 @@ class UssdService : AccessibilityService() {
             val pb = ProgressBar(this)
             pb.indeterminateTintList = ColorStateList.valueOf(0xFFFFC72C.toInt())
             box.addView(pb, LinearLayout.LayoutParams(px(46), px(46)))
-
-            val t1 = TextView(this)
-            t1.text = "Mise à jour en cours…"
-            t1.setTextColor(0xFFF1F3F7.toInt())
-            t1.textSize = 18f
-            t1.setTypeface(null, Typeface.BOLD)
-            t1.setPadding(0, px(22), 0, 0)
-            box.addView(t1)
-
-            val t2 = TextView(this)
-            t2.text = title
-            t2.setTextColor(0xFFFFC72C.toInt())
-            t2.textSize = 14f
-            t2.setPadding(0, px(6), 0, 0)
-            box.addView(t2)
-            overlayTitle = t2
-
-            val t3 = TextView(this)
-            t3.text = "Un instant, l'opérateur répond."
-            t3.setTextColor(0xFF9BA5B7.toInt())
-            t3.textSize = 13f
-            t3.setPadding(0, px(18), 0, 0)
-            box.addView(t3)
 
             val lp = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
@@ -328,7 +302,6 @@ class UssdService : AccessibilityService() {
             Journal.add("Écran de chargement affiché")
         } catch (e: Exception) {
             overlay = null
-            overlayTitle = null
             Journal.add("Écran de chargement impossible : ${e.javaClass.simpleName} ${e.message}")
         }
     }
@@ -338,7 +311,6 @@ class UssdService : AccessibilityService() {
         h.removeCallbacks(failsafe)
         val o = overlay ?: return
         overlay = null
-        overlayTitle = null
         try { getSystemService(WindowManager::class.java).removeView(o) } catch (_: Exception) {}
     }
 }

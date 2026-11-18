@@ -59,16 +59,14 @@ class MainActivity : Activity() {
         Ussd.onChange = null
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onBackPressed() {
-        if (page == Page.OFFERS) show(Page.HOME) else super.onBackPressed()
-    }
+    private var homeScroll: ScrollView? = null
 
     private fun show(p: Page) {
         page = p
+        val y = homeScroll?.scrollY ?: 0
         frame.removeAllViews()
-        val v = if (p == Page.HOME) buildHome() else buildOffers()
-        frame.addView(v, FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH))
+        frame.addView(buildHome(), FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH))
+        homeScroll?.post { homeScroll?.scrollTo(0, y) }
     }
 
     private fun onUssdChange() {
@@ -88,7 +86,7 @@ class MainActivity : Activity() {
         val replies = listOf(Store.cfg(this, "k_rep1", "1"), num, Store.cfg(this, "k_repfin", "1"))
             .filter { it.isNotBlank() }.joinToString(",")
         return Ussd.Job(Store.get(this, "sel_label").ifEmpty { "Forfait" },
-            Store.cfg(this, "k_offres", "#359#"), replies, Ussd.MODE_RESULT, "offer")
+            Store.cfg(this, "k_offres", "#359#"), replies, Ussd.MODE_RESULT, "offer", 1)
     }
 
     private fun menuJob() =
@@ -106,7 +104,7 @@ class MainActivity : Activity() {
         if (Ussd.active) { busyToast(); return }
         if (!ensureCall()) return
         val list = mutableListOf(soldeJob())
-        if (UssdService.instance != null) offerJob()?.let { list.add(it) }
+        if (UssdService.instance != null) (offerJob() ?: menuJob()).let { list.add(it) }
         Ussd.start(this, list)
     }
 
@@ -146,7 +144,6 @@ class MainActivity : Activity() {
     }
 
     private fun openOffers() {
-        show(Page.OFFERS)
         if (Store.menu(this).isEmpty() && UssdService.instance != null && !Ussd.active) refreshMenu()
     }
 
@@ -155,6 +152,14 @@ class MainActivity : Activity() {
     // ───────────────────────── accueil ─────────────────────────
 
     private fun buildHome(): View {
+        val sv = ScrollView(this)
+        sv.isVerticalScrollBarEnabled = false
+        homeScroll = sv
+        sv.addView(buildHomeContent(), FrameLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        return sv
+    }
+
+    private fun buildHomeContent(): View {
         val root = LinearLayout(this)
         root.orientation = LinearLayout.VERTICAL
         root.setPadding(dp(20), dp(28), dp(20), dp(24))
@@ -196,7 +201,7 @@ class MainActivity : Activity() {
         val offerText = Store.get(this, "r_offer")
         val (oSub, oErr) = status("offer")
         val body = when {
-            label.isEmpty() -> "Touchez ici pour choisir votre offre et voir ce qu'il vous reste."
+            label.isEmpty() -> "Choisissez votre offre dans la liste ci-dessous."
             offerText.isEmpty() -> if (Ussd.isBusy("offer")) "Lecture du forfait…" else "Touchez ↻ pour voir ce qu'il vous reste."
             else -> clean(offerText)
         }
@@ -205,8 +210,9 @@ class MainActivity : Activity() {
             if (label.isEmpty()) "" else oSub, oErr, false,
             { openOffers() }, { refreshOffer() })
 
-        root.addView(solde, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f).apply { topMargin = dp(20) })
-        root.addView(offres, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f).apply { topMargin = dp(14) })
+        root.addView(solde, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(20) })
+        root.addView(offres, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(14) })
+        addOfferList(root)
         return root
     }
 
@@ -256,6 +262,7 @@ class MainActivity : Activity() {
         val card = LinearLayout(this)
         card.orientation = LinearLayout.VERTICAL
         card.setPadding(dp(22), dp(18), dp(22), dp(16))
+        card.minimumHeight = dp(150)
         card.background = if (primary) Ui.ripple(this, Ui.ACCENT, 28)
         else Ui.ripple(this, Ui.SURFACE, 28, Ui.SURFACE2, 1)
         card.isClickable = true
@@ -298,10 +305,7 @@ class MainActivity : Activity() {
         tv.setLineSpacing(0f, 1.1f)
         tv.setPadding(0, dp(4), 0, dp(6))
         inner.addView(tv)
-        val scroll = ScrollView(this)
-        scroll.isVerticalScrollBarEnabled = false
-        scroll.addView(inner)
-        card.addView(scroll, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f))
+        card.addView(inner, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
 
         if (sub.isNotEmpty()) {
             val st = Ui.text(this, sub, 12f, if (subIsError && !primary) Ui.BAD else sfg)
@@ -336,67 +340,40 @@ class MainActivity : Activity() {
         if (need.isNotEmpty()) requestPermissions(need.toTypedArray(), 1)
     }
 
-    // ───────────────────────── liste des offres ─────────────────────────
+    // ───────────────────────── liste des offres (sur l'accueil) ─────────────────────────
 
-    private fun buildOffers(): View {
-        val root = LinearLayout(this)
-        root.orientation = LinearLayout.VERTICAL
-        root.setPadding(dp(20), dp(28), dp(20), 0)
-
-        val top = LinearLayout(this)
-        top.orientation = LinearLayout.HORIZONTAL
-        top.gravity = Gravity.CENTER_VERTICAL
-        top.addView(Ui.iconButton(this, R.drawable.ic_back) { show(Page.HOME) })
-        val titles = LinearLayout(this)
-        titles.orientation = LinearLayout.VERTICAL
-        titles.setPadding(dp(14), 0, dp(8), 0)
-        titles.addView(Ui.text(this, "Offres", 22f, Ui.TEXT, true))
-        titles.addView(Ui.text(this, "Touchez votre offre : le reste s'affiche sur l'accueil", 13f, Ui.MUTED))
-        top.addView(titles, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
-        top.addView(Ui.iconButton(this, R.drawable.ic_refresh) { refreshMenu() })
-        root.addView(top)
-
-        val list = LinearLayout(this)
-        list.orientation = LinearLayout.VERTICAL
-        list.setPadding(0, dp(20), 0, dp(24))
+    private fun addOfferList(root: LinearLayout) {
+        val head = LinearLayout(this)
+        head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.CENTER_VERTICAL
+        head.setPadding(dp(4), dp(24), 0, dp(10))
+        head.addView(Ui.text(this, "Mes offres", 18f, Ui.TEXT, true), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+        head.addView(Ui.iconButton(this, R.drawable.ic_refresh) { refreshMenu() })
+        root.addView(head)
 
         val items = Store.menu(this)
-        val loadingMenu = Ussd.isBusy("menu")
+        val loadingMenu = Ussd.isBusy("menu") || (items.isEmpty() && Ussd.isBusy("offer"))
         val menuErr = Store.get(this, "e_menu")
         if (menuErr.isNotEmpty() && !loadingMenu) {
             val e = Ui.text(this, "⚠ $menuErr", 13f, Ui.BAD, true)
-            e.setPadding(dp(4), 0, dp(4), dp(12))
-            list.addView(e)
+            e.setPadding(dp(4), 0, dp(4), dp(10))
+            root.addView(e)
         }
         if (items.isEmpty()) {
-            val box = Ui.card(this)
-            box.setPadding(dp(20), dp(20), dp(20), dp(20))
-            if (loadingMenu) {
-                box.addView(Ui.text(this, "Chargement de la liste…", 17f, Ui.TEXT, true))
-            } else {
-                box.addView(Ui.text(this, "Aucune liste d'offres pour l'instant", 17f, Ui.TEXT, true))
-                val hint = Ui.text(this, "Chargez la liste une première fois : elle sera gardée dans l'application.", 14f, Ui.MUTED)
-                hint.setPadding(0, dp(6), 0, dp(16))
-                box.addView(hint)
-                box.addView(Ui.primaryButton(this, "Charger les offres") { refreshMenu() })
-            }
-            list.addView(box)
+            val msg = if (loadingMenu) "Chargement de la liste…" else "Liste non chargée : touchez ↻"
+            val t = Ui.text(this, msg, 14f, Ui.MUTED)
+            t.setPadding(dp(4), 0, 0, dp(10))
+            root.addView(t)
         } else {
             val sel = Store.get(this, "sel_num")
-            items.forEach { list.addView(offerRow(it, it.num == sel), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { bottomMargin = dp(10) }) }
+            items.forEach { root.addView(offerRow(it, it.num == sel), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { bottomMargin = dp(10) }) }
             val t = Store.getLong(this, "menu_time")
             if (t > 0) {
-                val foot = Ui.text(this, if (loadingMenu) "Mise à jour de la liste…" else "Liste mise à jour le ${fmt.format(Date(t))}", 12f, Ui.MUTED)
-                foot.setPadding(dp(4), dp(8), 0, 0)
-                list.addView(foot)
+                val foot = Ui.text(this, "Touchez votre offre pour voir ce qu'il reste · liste du ${fmt.format(Date(t))}", 12f, Ui.MUTED)
+                foot.setPadding(dp(4), dp(4), 0, dp(8))
+                root.addView(foot)
             }
         }
-
-        val scroll = ScrollView(this)
-        scroll.isVerticalScrollBarEnabled = false
-        scroll.addView(list)
-        root.addView(scroll, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f))
-        return root
     }
 
     private fun offerRow(m: MenuItem, selected: Boolean): View {

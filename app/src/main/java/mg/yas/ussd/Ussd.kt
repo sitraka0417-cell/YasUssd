@@ -97,13 +97,15 @@ object Ussd {
     const val MODE_RESULT = 0
     const val MODE_MENU = 1
 
-    class Job(val title: String, val code: String, val replies: String, val mode: Int = MODE_RESULT, val key: String = "")
+    /** menuAt : indice de la réponse qui s'envoie sur l'écran de la liste des offres (la liste est alors mémorisée au passage). */
+    class Job(val title: String, val code: String, val replies: String, val mode: Int = MODE_RESULT, val key: String = "", val menuAt: Int = -1)
 
     private val main = Handler(Looper.getMainLooper())
     private lateinit var app: Context
     private val jobs = ArrayDeque<Job>()
     private var cur: Job? = null
     private var dialed = false
+    private var total = 0
 
     /** Réponses restant à envoyer pour le code en cours (lu par le service d'accessibilité). */
     val queue = ArrayDeque<String>()
@@ -171,6 +173,7 @@ object Ussd {
         runningKey = j.key
         queue.clear()
         j.replies.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach { queue.addLast(it) }
+        total = queue.size
         Journal.add("▶ ${j.title} : ${j.code}  réponses=[${queue.joinToString(",")}]")
         onChange?.invoke()
         if (app.checkSelfPermission(Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
@@ -245,6 +248,18 @@ object Ussd {
 
     // ───────────────────────── fin d'un code ─────────────────────────
 
+    /** Appelé par le service avant chaque réponse : mémorise la liste des offres quand c'est l'écran de la liste. */
+    fun onMenu(msg: String) {
+        val j = cur ?: return
+        if (j.menuAt < 0 || total - queue.size != j.menuAt) return
+        val items = parseMenu(msg)
+        if (items.isEmpty()) return
+        Store.saveMenu(app, items)
+        Store.put(app, "e_menu", "")
+        Journal.add("Liste des offres mémorisée (${items.size})")
+        onChange?.invoke()
+    }
+
     /** Appelé par le service d'accessibilité quand le dernier écran USSD a été lu. */
     fun done(text: String) = finishJob(text, true)
 
@@ -296,7 +311,7 @@ object Ussd {
         // Si le code a échoué alors qu'une fenêtre USSD est restée ouverte, on la ferme.
         if (wasCapturing && !ok) UssdService.instance?.dismissNow()
         onChange?.invoke()
-        main.postDelayed({ next() }, 450)
+        main.postDelayed({ next() }, 100)
     }
 
     private fun allDone() {
