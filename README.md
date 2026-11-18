@@ -1,8 +1,13 @@
-# Yas USSD
+# Yas USSD 3.0 (v4)
 App Android (Kotlin, sans bibliothèque externe).
 
-- Accueil épuré : le solde (`#357#`) et le forfait restant de l'offre choisie s'affichent directement, mis à jour automatiquement en arrière-plan.
-- Offres : la liste est lue automatiquement (`#359#` puis `1`), puis un appui sur une offre envoie `1 → numéro de l'offre → 1` et affiche le forfait restant.
-- Paramètres (icône engrenage) : SIM, accessibilité, codes, rappel de fin de forfait, code libre, autorisations.
+- **Accueil** : deux cartes, *Solde* (`#357#`) et *forfait restant* de l'offre choisie (`#359#` puis `1 → n° → 1`).
+  Le texte affiché est la copie du résultat de l'opérateur ; appui long = copier.
+- **Mise à jour automatique** à chaque ouverture de l'appli (même si elle était restée en arrière-plan), au plus
+  une fois toutes les 20 s ; boutons ↻ pour forcer. En cas d'échec, le dernier bon résultat reste affiché avec un avertissement.
+- **Arrière-plan** : le solde passe par l'API Android (aucune fenêtre). Pour le forfait, un écran de chargement recouvre
+  la fenêtre USSD du système pendant que le service d'accessibilité tape les réponses tout seul.
+- **Paramètres** : SIM, accessibilité, codes, rappel de fin de forfait, code libre, **journal technique** (à copier si un code échoue).
 
 Build : GitHub Actions (onglet Actions > Build APK > Artifacts > YasUssd-debug-apk).
+Après installation : activer « Yas USSD » dans Paramètres > Accessibilité (à refaire si Android le désactive après une mise à jour).

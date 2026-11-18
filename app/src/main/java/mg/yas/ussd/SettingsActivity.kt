@@ -38,14 +38,11 @@ class SettingsActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        // Un code libre lancé d'ici renvoie vers l'accueil, qui affiche le résultat.
-        Ussd.onResult = { this@SettingsActivity.finish() }
         build()
     }
 
     override fun onPause() {
         super.onPause()
-        Ussd.onResult = null
         saveFields()
     }
 
@@ -110,9 +107,10 @@ class SettingsActivity : Activity() {
         root.addView(Ui.section(this, "Avancé"))
         val c4 = Ui.card(this)
         c4.addView(Ui.row(this, "Lancer un autre code", "Code libre, avec réponses automatiques facultatives") { freeCode() })
+        c4.addView(Ui.row(this, "Journal technique", "Ce que l'appli a lu et envoyé lors des dernières mises à jour") { showJournal() })
         root.addView(c4)
 
-        val ver = Ui.text(this, "Yas USSD 2.1", 12f, Ui.MUTED)
+        val ver = Ui.text(this, "Yas USSD 3.0", 12f, Ui.MUTED)
         ver.setPadding(dp(6), dp(24), 0, 0)
         root.addView(ver)
 
@@ -209,9 +207,36 @@ class SettingsActivity : Activity() {
                 val c = code.text.toString().trim()
                 if (c.isNotEmpty()) {
                     saveFields()
-                    Ussd.run(this, c, c, rep.text.toString().trim())
+                    // Le résultat s'affiche sur l'accueil, dans une boîte de dialogue.
+                    if (Ussd.start(this, listOf(Ussd.Job(c, c, rep.text.toString().trim())))) {
+                        this@SettingsActivity.finish()
+                    } else {
+                        Toast.makeText(this, "Une mise à jour est déjà en cours.", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
             .setNegativeButton("Annuler", null))
+    }
+
+    // ───────────────────────── journal technique ─────────────────────────
+
+    private fun showJournal() {
+        val txt = Journal.text(this).ifEmpty { "Journal vide : lancez une mise à jour depuis l'accueil." }
+        val tv = Ui.text(this, txt, 12f, Ui.TEXT)
+        tv.typeface = android.graphics.Typeface.MONOSPACE
+        tv.setTextIsSelectable(true)
+        tv.setPadding(dp(22), dp(14), dp(22), dp(6))
+        val sv = ScrollView(this)
+        sv.addView(tv)
+        Ui.dialog(this, AlertDialog.Builder(this)
+            .setTitle("Journal technique")
+            .setView(sv)
+            .setPositiveButton("Fermer", null)
+            .setNeutralButton("Copier") { _, _ ->
+                getSystemService(android.content.ClipboardManager::class.java)
+                    .setPrimaryClip(android.content.ClipData.newPlainText("Journal", txt))
+                Toast.makeText(this, "Copié", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Effacer") { _, _ -> Journal.clear(this) })
     }
 }

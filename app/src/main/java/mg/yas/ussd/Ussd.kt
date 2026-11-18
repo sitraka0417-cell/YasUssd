@@ -14,6 +14,9 @@ import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /** Une ligne numérotée d'un menu USSD (ex : « 1 » + « Yas Mi-Net 1 Go »). */
 data class MenuItem(val num: String, val label: String)
@@ -53,25 +56,78 @@ object Store {
     }
 }
 
+/** Petit journal technique (consultable dans Paramètres) pour comprendre ce qui s'est passé si un code échoue. */
+object Journal {
+    private val lines = ArrayDeque<String>()
+    private val f = SimpleDateFormat("HH:mm:ss", Locale.FRANCE)
+
+    fun add(msg: String) {
+        synchronized(lines) {
+            lines.addLast("${f.format(Date())}  $msg")
+            while (lines.size > 200) lines.removeFirst()
+        }
+    }
+
+    fun text(c: Context): String {
+        val mem = synchronized(lines) { lines.joinToString("\n") }
+        return if (mem.isNotEmpty()) mem else Store.get(c, "journal")
+    }
+
+    fun flush(c: Context) {
+        val t = synchronized(lines) { lines.joinToString("\n") }
+        Store.put(c, "journal", if (t.length > 12000) t.takeLast(12000) else t)
+    }
+
+    fun clear(c: Context) {
+        synchronized(lines) { lines.clear() }
+        Store.put(c, "journal", "")
+    }
+}
+
+/**
+ * Moteur USSD.
+ *
+ * Un « lot » est une suite de codes exécutés l'un après l'autre, en arrière-plan :
+ *  - sans réponse à envoyer (ex : solde) → requête directe de l'API Android, aucune fenêtre ;
+ *  - avec des réponses (ex : offres : 1 → n° → 1) → le code est composé, la fenêtre USSD du système est
+ *    masquée par un écran de chargement et pilotée par le service d'accessibilité.
+ * Les résultats sont rangés dans Store (r_<clé>, t_<clé>) et l'accueil les affiche.
+ */
 object Ussd {
     const val MODE_RESULT = 0
     const val MODE_MENU = 1
 
+    class Job(val title: String, val code: String, val replies: String, val mode: Int = MODE_RESULT, val key: String = "")
+
     private val main = Handler(Looper.getMainLooper())
     private lateinit var app: Context
-    val queue = ArrayDeque<String>()
-    @Volatile var active = false
-    var lastSig = ""
-    var onResult: (() -> Unit)? = null
-    private var title = ""
-    private var mode = MODE_RESULT
-    private var key = ""
-    /** Clé de l'opération en cours (« solde », « offer », « menu »), vide si aucune. */
-    @Volatile var runningKey = ""
+    private val jobs = ArrayDeque<Job>()
+    private var cur: Job? = null
     private var dialed = false
-    private val timeout = Runnable { finish("Délai dépassé : aucune réponse de l'opérateur.") }
+
+    /** Réponses restant à envoyer pour le code en cours (lu par le service d'accessibilité). */
+    val queue = ArrayDeque<String>()
+
+    /** Le moteur est occupé (un lot est en cours). */
+    @Volatile var active = false
+    /** Une fenêtre USSD du système est attendue : le service d'accessibilité doit la piloter. */
+    @Volatile var capturing = false
+    @Volatile var runningKey = ""
+
+    /** Appelé (sur le thread principal) à chaque changement : début/fin d'un code, fin du lot. */
+    var onChange: (() -> Unit)? = null
+
+    private val timeout = Runnable {
+        Journal.add("Délai dépassé")
+        finishJob("Délai dépassé : aucune réponse de l'opérateur.", false)
+    }
 
     private val menuLine = Regex("""^\s*(\d{1,2})\s*(?:[.:\-)\]]\s*|\s+)(.+?)\s*$""")
+    private val badReply = Regex(
+        "(?i)(connection problem|invalid mmi|probl[eè]me de connexion|code mmi|service (indisponible|unavailable)|veuillez r[ée]essayer|please try again)"
+    )
+
+    fun isBusy(key: String): Boolean = active && (runningKey == key || jobs.any { it.key == key })
 
     /** Extrait les lignes numérotées d'un menu, sans « retour », « suivant », etc. */
     fun parseMenu(text: String): List<MenuItem> {
@@ -88,67 +144,91 @@ object Ussd {
         return out
     }
 
-    fun run(ctx: Context, title: String, code: String, replies: String, mode: Int = MODE_RESULT, key: String = "") {
+    private fun short(t: CharSequence): String {
+        val s = t.toString().replace("\n", " ⏎ ")
+        return if (s.length > 140) s.take(140) + "…" else s
+    }
+
+    // ───────────────────────── lancement ─────────────────────────
+
+    /** Lance un lot de codes. Renvoie false si le moteur est déjà occupé. */
+    fun start(ctx: Context, list: List<Job>): Boolean {
         app = ctx.applicationContext
-        this.title = title
-        this.mode = mode
-        this.key = key
-        runningKey = key
-        lastSig = ""
+        if (active || list.isEmpty()) return false
+        active = true
+        dialed = false
+        jobs.clear()
+        jobs.addAll(list)
+        Journal.add("──── Nouveau lot : ${list.joinToString(", ") { it.title }}")
+        next()
+        return true
+    }
+
+    private fun next() {
+        val j = jobs.removeFirstOrNull()
+        if (j == null) { allDone(); return }
+        cur = j
+        runningKey = j.key
         queue.clear()
-        replies.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach { queue.addLast(it) }
+        j.replies.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach { queue.addLast(it) }
+        Journal.add("▶ ${j.title} : ${j.code}  réponses=[${queue.joinToString(",")}]")
+        onChange?.invoke()
         if (app.checkSelfPermission(Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
-            finish("Autorisation d'appel manquante. Accordez-la dans Paramètres > Autorisations.")
+            finishJob("Autorisation d'appel manquante (Paramètres > Autorisations).", false)
             return
         }
         val subId = Store.subId(app)
-        if (queue.isEmpty()) single(code, subId) else dial(code, subId)
+        if (queue.isEmpty()) single(j, subId) else dial(j, subId)
     }
 
-    @SuppressLint("MissingPermission")
-    private fun single(code: String, subId: Int) {
-        active = true
-        dialed = false
+    private fun armTimeout(ms: Long) {
         main.removeCallbacks(timeout)
-        main.postDelayed(timeout, 30000)
+        main.postDelayed(timeout, ms)
+    }
+
+    /** Code sans menu : requête directe, aucune fenêtre n'apparaît. */
+    @SuppressLint("MissingPermission")
+    private fun single(j: Job, subId: Int) {
+        armTimeout(30000)
         try {
             var tm = app.getSystemService(TelephonyManager::class.java)
             if (subId >= 0) tm = tm.createForSubscriptionId(subId)
-            tm.sendUssdRequest(code, object : TelephonyManager.UssdResponseCallback() {
+            tm.sendUssdRequest(j.code, object : TelephonyManager.UssdResponseCallback() {
                 override fun onReceiveUssdResponse(t: TelephonyManager, r: String, resp: CharSequence) {
-                    finish(resp.toString())
+                    if (cur !== j) return
+                    Journal.add("Réponse directe : ${short(resp)}")
+                    finishJob(resp.toString(), true)
                 }
                 override fun onReceiveUssdResponseFailed(t: TelephonyManager, r: String, f: Int) {
-                    dial(code, subId)
+                    if (cur !== j) return
+                    Journal.add("Réponse directe refusée (code $f) → passage par la fenêtre USSD")
+                    dial(j, subId)
                 }
             }, main)
         } catch (e: Exception) {
-            dial(code, subId)
+            Journal.add("Requête directe impossible (${e.javaClass.simpleName}) → passage par la fenêtre USSD")
+            dial(j, subId)
         }
     }
 
+    /** Code avec menus : on compose le code, le service d'accessibilité répond et lit, un écran de chargement masque tout. */
     @SuppressLint("MissingPermission")
-    private fun dial(code: String, subId: Int) {
-        if (UssdService.instance == null) {
-            if (queue.isNotEmpty()) {
-                finish("Activez d'abord le service d'accessibilité (Paramètres > Service d'accessibilité) pour les offres à plusieurs étapes.")
-                return
-            }
-            active = false
-        } else {
-            active = true
+    private fun dial(j: Job, subId: Int) {
+        val svc = UssdService.instance
+        if (svc == null) {
+            finishJob("Service d'accessibilité désactivé : activez « Yas USSD » dans les services d'accessibilité.", false)
+            return
         }
         dialed = true
-        main.removeCallbacks(timeout)
-        if (active) {
-            main.postDelayed(timeout, 35000)
-            // Cache la fenêtre USSD du système pendant que l'appli répond toute seule.
-            UssdService.instance?.showOverlay()
-        }
-        val i = Intent(Intent.ACTION_CALL, Uri.fromParts("tel", code, null))
+        capturing = true
+        armTimeout(45000)
+        svc.begin(j.title)
+        val i = Intent(Intent.ACTION_CALL, Uri.fromParts("tel", j.code, null))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         phoneAccount(subId)?.let { i.putExtra(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, it) }
-        try { app.startActivity(i) } catch (e: Exception) { finish("Impossible de lancer le code : ${e.message}") }
+        try { app.startActivity(i) } catch (e: Exception) {
+            finishJob("Impossible de lancer le code : ${e.message}", false)
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -163,41 +243,78 @@ object Ussd {
         } catch (e: Exception) { null }
     }
 
-    fun finish(text: String) {
-        main.removeCallbacks(timeout)
-        active = false
-        queue.clear()
-        UssdService.instance?.hideOverlay()
+    // ───────────────────────── fin d'un code ─────────────────────────
 
-        // show = true : on affiche le texte brut dans une boîte de dialogue (erreur, menu illisible, code libre).
-        var show = true
-        if (mode == MODE_MENU) {
-            val items = parseMenu(text)
+    /** Appelé par le service d'accessibilité quand le dernier écran USSD a été lu. */
+    fun done(text: String) = finishJob(text, true)
+
+    /** Appelé par le service d'accessibilité s'il n'arrive pas à répondre. */
+    fun fail(msg: String) = finishJob(msg, false)
+
+    private fun finishJob(textIn: String, okIn: Boolean) {
+        val j = cur ?: return
+        cur = null
+        main.removeCallbacks(timeout)
+        val wasCapturing = capturing
+        capturing = false
+        queue.clear()
+
+        val text = textIn.trim()
+        var ok = okIn
+        var err = text
+        if (ok && text.isEmpty()) { ok = false; err = "Réponse vide de l'opérateur." }
+        if (ok && badReply.containsMatchIn(text)) { ok = false; err = text }
+        val now = System.currentTimeMillis()
+
+        if (j.mode == MODE_MENU) {
+            val items = if (ok) parseMenu(text) else emptyList()
             if (items.isNotEmpty()) {
                 Store.saveMenu(app, items)
-                show = false
+                Store.put(app, "e_menu", "")
+            } else {
+                Store.put(app, "e_menu", if (ok) "Liste des offres illisible (voir le journal technique)." else err)
+                Store.putLong(app, "te_menu", now)
             }
-        } else if (key.isNotEmpty()) {
-            // Résultat silencieux : affiché directement sur l'accueil.
-            Store.put(app, "r_$key", text)
-            Store.putLong(app, "t_$key", System.currentTimeMillis())
-            show = false
+        } else if (j.key.isNotEmpty()) {
+            if (ok) {
+                Store.put(app, "r_${j.key}", text)
+                Store.putLong(app, "t_${j.key}", now)
+                Store.put(app, "e_${j.key}", "")
+            } else {
+                Store.put(app, "e_${j.key}", err)
+                Store.putLong(app, "te_${j.key}", now)
+            }
+        } else {
+            // Code libre lancé depuis les paramètres : le résultat s'affiche dans une boîte de dialogue.
+            Store.put(app, "last_text", if (ok) text else err)
+            Store.put(app, "last_title", j.title)
+            Store.putLong(app, "last_time", now)
+            Store.put(app, "unseen", "1")
         }
-        if (show) {
-            Store.put(app, "last_text", text)
-            Store.put(app, "last_title", title)
-            Store.putLong(app, "last_time", System.currentTimeMillis())
-        }
-        Store.put(app, "unseen", if (show) "1" else "0")
-        runningKey = ""
 
+        Journal.add(if (ok) "✔ ${j.title} : ${short(text)}" else "✘ ${j.title} : ${short(err)}")
+        // Si le code a échoué alors qu'une fenêtre USSD est restée ouverte, on la ferme.
+        if (wasCapturing && !ok) UssdService.instance?.dismissNow()
+        onChange?.invoke()
+        main.postDelayed({ next() }, 450)
+    }
+
+    private fun allDone() {
+        active = false
+        runningKey = ""
+        cur = null
+        capturing = false
+        Store.putLong(app, "last_end", System.currentTimeMillis())
+        Journal.flush(app)
+        val svc = UssdService.instance
         if (dialed) {
             dialed = false
             try {
-                app.startActivity(Intent(app, MainActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
-            } catch (_: Exception) {}
+                (svc ?: app).startActivity(Intent(app, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+            } catch (e: Exception) { Journal.add("Retour à l'appli impossible : ${e.message}") }
         }
-        onResult?.invoke()
+        svc?.end()
+        onChange?.invoke()
     }
 }

@@ -7,10 +7,10 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
@@ -45,9 +45,10 @@ class MainActivity : Activity() {
         show(Page.HOME)
     }
 
+    /** Appelé à chaque ouverture de l'appli, y compris quand elle était restée en arrière-plan. */
     override fun onResume() {
         super.onResume()
-        Ussd.onResult = { onUssdDone() }
+        Ussd.onChange = { runOnUiThread { onUssdChange() } }
         show(page)
         handleUnseen()
         autoRefresh()
@@ -55,7 +56,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
-        Ussd.onResult = null
+        Ussd.onChange = null
     }
 
     @Deprecated("Deprecated in Java")
@@ -70,23 +71,86 @@ class MainActivity : Activity() {
         frame.addView(v, FrameLayout.LayoutParams(Ui.MATCH, Ui.MATCH))
     }
 
-    // ───────────────────────── mise à jour automatique ─────────────────────────
-
-    /** Solde d'abord (en arrière-plan), puis forfait restant de l'offre choisie, si les données ont plus de quelques minutes. */
-    private fun autoRefresh() {
-        if (Ussd.active || page != Page.HOME || !hasCall()) return
-        if (System.currentTimeMillis() - Store.getLong(this, "t_solde") > 60_000L) {
-            runSolde()
-            return
-        }
-        refreshOffer(false)
-    }
-
-    private fun onUssdDone() {
+    private fun onUssdChange() {
+        if (isFinishing) return
         show(page)
         handleUnseen()
-        autoRefresh()
     }
+
+    // ───────────────────────── mise à jour automatique ─────────────────────────
+
+    private fun soldeJob() =
+        Ussd.Job("Solde", Store.cfg(this, "k_solde", "#357#"), "", Ussd.MODE_RESULT, "solde")
+
+    private fun offerJob(): Ussd.Job? {
+        val num = Store.get(this, "sel_num")
+        if (num.isEmpty()) return null
+        val replies = listOf(Store.cfg(this, "k_rep1", "1"), num, Store.cfg(this, "k_repfin", "1"))
+            .filter { it.isNotBlank() }.joinToString(",")
+        return Ussd.Job(Store.get(this, "sel_label").ifEmpty { "Forfait" },
+            Store.cfg(this, "k_offres", "#359#"), replies, Ussd.MODE_RESULT, "offer")
+    }
+
+    private fun menuJob() =
+        Ussd.Job("Liste des offres", Store.cfg(this, "k_offres", "#359#"),
+            Store.cfg(this, "k_rep1", "1"), Ussd.MODE_MENU, "menu")
+
+    /** Solde puis forfait : mis à jour à chaque ouverture, au plus une fois toutes les 20 secondes. */
+    private fun autoRefresh() {
+        if (page != Page.HOME || Ussd.active || !hasCall()) return
+        if (System.currentTimeMillis() - Store.getLong(this, "last_end") < 20_000L) return
+        refreshAll()
+    }
+
+    private fun refreshAll() {
+        if (Ussd.active) { busyToast(); return }
+        if (!ensureCall()) return
+        val list = mutableListOf(soldeJob())
+        if (UssdService.instance != null) offerJob()?.let { list.add(it) }
+        Ussd.start(this, list)
+    }
+
+    private fun refreshSolde() {
+        if (Ussd.active) { busyToast(); return }
+        if (!ensureCall()) return
+        Ussd.start(this, listOf(soldeJob()))
+    }
+
+    private fun refreshOffer() {
+        if (Ussd.active) { busyToast(); return }
+        if (!ensureCall()) return
+        if (UssdService.instance == null) { askAccessibility(); return }
+        val j = offerJob()
+        if (j == null) { openOffers(); return }
+        Ussd.start(this, listOf(j))
+    }
+
+    private fun refreshMenu() {
+        if (Ussd.active) { busyToast(); return }
+        if (!ensureCall()) return
+        if (UssdService.instance == null) { askAccessibility(); return }
+        Ussd.start(this, listOf(menuJob()))
+    }
+
+    private fun pickOffer(m: MenuItem) {
+        if (Ussd.active) { busyToast(); return }
+        if (!ensureCall()) return
+        if (UssdService.instance == null) { askAccessibility(); return }
+        Store.put(this, "sel_num", m.num)
+        Store.put(this, "sel_label", m.label)
+        Store.put(this, "r_offer", "")
+        Store.putLong(this, "t_offer", 0L)
+        Store.put(this, "e_offer", "")
+        show(Page.HOME)
+        offerJob()?.let { Ussd.start(this, listOf(it)) }
+    }
+
+    private fun openOffers() {
+        show(Page.OFFERS)
+        if (Store.menu(this).isEmpty() && UssdService.instance != null && !Ussd.active) refreshMenu()
+    }
+
+    private fun busyToast() = Toast.makeText(this, "Une mise à jour est déjà en cours.", Toast.LENGTH_SHORT).show()
 
     // ───────────────────────── accueil ─────────────────────────
 
@@ -103,58 +167,86 @@ class MainActivity : Activity() {
         titles.addView(Ui.text(this, "Yas USSD", 26f, Ui.TEXT, true))
         titles.addView(Ui.text(this, Store.get(this, "sim_label", "SIM par défaut"), 13f, Ui.MUTED))
         top.addView(titles, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+        top.addView(Ui.iconButton(this, R.drawable.ic_refresh) { refreshAll() },
+            LinearLayout.LayoutParams(dp(46), dp(46)).apply { rightMargin = dp(8) })
         top.addView(Ui.iconButton(this, R.drawable.ic_settings) {
             startActivity(Intent(this, SettingsActivity::class.java))
         })
         root.addView(top)
 
-        if (UssdService.instance == null) {
-            val banner = Ui.text(this, "Accessibilité désactivée : touchez ici pour l'activer (nécessaire pour les offres).", 13f, Ui.ACCENT)
-            banner.setPadding(dp(16), dp(12), dp(16), dp(12))
-            banner.background = Ui.ripple(this, Ui.SURFACE, 14)
-            banner.isClickable = true
-            banner.setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
-            root.addView(banner, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(16) })
+        if (!hasCall()) {
+            root.addView(banner("Autorisation d'appel requise : touchez ici pour l'accorder.") { ensureCall() },
+                LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(16) })
+        } else if (UssdService.instance == null) {
+            root.addView(banner("Service d'accessibilité désactivé : touchez ici pour l'activer (nécessaire pour mettre à jour le forfait en arrière-plan).") {
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(16) })
         }
 
         // Carte solde
-        val soldeBusy = Ussd.active && Ussd.runningKey == "solde"
         val soldeText = Store.get(this, "r_solde")
-        val soldeTime = Store.getLong(this, "t_solde")
+        val (sSub, sErr) = status("solde")
         val solde = bigCard(
             R.drawable.ic_wallet, "Solde",
-            if (soldeText.isEmpty()) "Touchez pour voir votre crédit" else clean(soldeText),
-            subLine(soldeBusy, soldeTime), true,
-            { runSolde() }, { runSolde() })
+            if (soldeText.isEmpty()) "Touchez ↻ pour voir votre crédit" else clean(soldeText),
+            soldeText, sSub, sErr, true, { refreshSolde() }, { refreshSolde() })
 
         // Carte offre
         val label = Store.get(this, "sel_label")
-        val offerBusy = Ussd.active && Ussd.runningKey == "offer"
         val offerText = Store.get(this, "r_offer")
-        val offerTime = Store.getLong(this, "t_offer")
+        val (oSub, oErr) = status("offer")
         val body = when {
-            label.isEmpty() -> "Choisissez votre offre pour voir ce qu'il vous reste"
-            offerText.isEmpty() -> "Actualisez pour voir ce qu'il vous reste"
+            label.isEmpty() -> "Touchez ici pour choisir votre offre et voir ce qu'il vous reste."
+            offerText.isEmpty() -> if (Ussd.isBusy("offer")) "Lecture du forfait…" else "Touchez ↻ pour voir ce qu'il vous reste."
             else -> clean(offerText)
         }
         val offres = bigCard(
-            R.drawable.ic_list, if (label.isEmpty()) "Offres" else label, body,
-            if (label.isEmpty()) "" else subLine(offerBusy, offerTime) + " · touchez pour changer d'offre", false,
-            { openOffers() },
-            { if (label.isEmpty()) openOffers() else if (UssdService.instance == null) askAccessibility() else refreshOffer(true) })
+            R.drawable.ic_list, if (label.isEmpty()) "Offres" else label, body, offerText,
+            if (label.isEmpty()) "" else oSub, oErr, false,
+            { openOffers() }, { refreshOffer() })
 
-        root.addView(solde, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f).apply { topMargin = dp(24) })
-        root.addView(offres, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f).apply { topMargin = dp(16) })
+        root.addView(solde, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f).apply { topMargin = dp(20) })
+        root.addView(offres, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f).apply { topMargin = dp(14) })
         return root
+    }
+
+    private fun banner(text: String, onClick: () -> Unit): View {
+        val b = Ui.text(this, text, 13f, Ui.ACCENT)
+        b.setPadding(dp(16), dp(12), dp(16), dp(12))
+        b.background = Ui.ripple(this, Ui.SURFACE, 14)
+        b.isClickable = true
+        b.setOnClickListener { onClick() }
+        return b
     }
 
     private fun clean(t: String) = t.trim().replace(Regex("\n{2,}"), "\n")
 
-    private fun subLine(busy: Boolean, time: Long): String =
-        if (busy) "Mise à jour…" else if (time > 0) "Mis à jour le ${short.format(Date(time))}" else ""
+    private fun ago(t: Long): String {
+        val m = (System.currentTimeMillis() - t) / 60_000L
+        return when {
+            m < 1 -> "à l'instant"
+            m < 60 -> "il y a $m min"
+            m < 1440 -> "il y a ${m / 60} h"
+            else -> "le ${short.format(Date(t))}"
+        }
+    }
+
+    /** Ligne d'état d'une carte : (texte, est-ce une erreur). Le dernier bon résultat reste affiché même après un échec. */
+    private fun status(key: String): Pair<String, Boolean> {
+        if (Ussd.isBusy(key)) return "Mise à jour en cours…" to false
+        val err = Store.get(this, "e_$key")
+        val te = Store.getLong(this, "te_$key")
+        val t = Store.getLong(this, "t_$key")
+        if (err.isNotEmpty() && te >= t) {
+            val old = if (t > 0) " Dernier résultat : ${short.format(Date(t))}." else ""
+            return "⚠ ${err.replace("\n", " ").take(110)}$old" to true
+        }
+        if (t > 0) return "Mis à jour ${ago(t)}" to false
+        return "" to false
+    }
 
     private fun bigCard(
-        icon: Int, title: String, body: String, sub: String, primary: Boolean,
+        icon: Int, title: String, body: String, rawText: String, sub: String, subIsError: Boolean, primary: Boolean,
         onClick: () -> Unit, onRefresh: () -> Unit
     ): View {
         val fg = if (primary) Ui.ON_ACCENT else Ui.TEXT
@@ -163,7 +255,7 @@ class MainActivity : Activity() {
 
         val card = LinearLayout(this)
         card.orientation = LinearLayout.VERTICAL
-        card.setPadding(dp(22), dp(20), dp(22), dp(20))
+        card.setPadding(dp(22), dp(18), dp(22), dp(16))
         card.background = if (primary) Ui.ripple(this, Ui.ACCENT, 28)
         else Ui.ripple(this, Ui.SURFACE, 28, Ui.SURFACE2, 1)
         card.isClickable = true
@@ -191,19 +283,36 @@ class MainActivity : Activity() {
         head.addView(rf, LinearLayout.LayoutParams(dp(44), dp(44)))
         card.addView(head)
 
-        card.addView(View(this), LinearLayout.LayoutParams(1, 0, 1f))
-        card.addView(Ui.text(this, title, 15f, sfg, true))
-        val tv = Ui.text(this, body, 20f, fg, true)
-        tv.maxLines = 6
-        tv.ellipsize = TextUtils.TruncateAt.END
+        // Zone de texte défilante : le résultat est copié tel quel ; appui long = copier.
+        val inner = LinearLayout(this)
+        inner.orientation = LinearLayout.VERTICAL
+        inner.isClickable = true
+        inner.setOnClickListener { onClick() }
+        if (rawText.isNotEmpty()) inner.setOnLongClickListener {
+            getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("USSD", rawText))
+            Toast.makeText(this, "Copié", Toast.LENGTH_SHORT).show()
+            true
+        }
+        inner.addView(Ui.text(this, title, 15f, sfg, true), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(10) })
+        val tv = Ui.text(this, body, if (rawText.isEmpty()) 17f else 20f, fg, rawText.isNotEmpty())
         tv.setLineSpacing(0f, 1.1f)
         tv.setPadding(0, dp(4), 0, dp(6))
-        card.addView(tv)
-        if (sub.isNotEmpty()) card.addView(Ui.text(this, sub, 12f, sfg))
+        inner.addView(tv)
+        val scroll = ScrollView(this)
+        scroll.isVerticalScrollBarEnabled = false
+        scroll.addView(inner)
+        card.addView(scroll, LinearLayout.LayoutParams(Ui.MATCH, 0, 1f))
+
+        if (sub.isNotEmpty()) {
+            val st = Ui.text(this, sub, 12f, if (subIsError && !primary) Ui.BAD else sfg)
+            if (subIsError) st.setTypeface(null, Typeface.BOLD)
+            st.setPadding(0, dp(6), 0, 0)
+            card.addView(st)
+        }
         return card
     }
 
-    // ───────────────────────── actions ─────────────────────────
+    // ───────────────────────── autorisations ─────────────────────────
 
     private fun ensureCall(): Boolean {
         if (hasCall()) return true
@@ -212,54 +321,10 @@ class MainActivity : Activity() {
         return false
     }
 
-    private fun runSolde() {
-        if (Ussd.active || !ensureCall()) return
-        Ussd.run(this, "Solde", Store.cfg(this, "k_solde", "#357#"), "", Ussd.MODE_RESULT, "solde")
-        if (page == Page.HOME) show(Page.HOME)
-    }
-
-    private fun openOffers() {
-        show(Page.OFFERS)
-        if (Store.menu(this).isEmpty() && UssdService.instance != null) refreshMenu()
-    }
-
-    private fun refreshMenu() {
-        if (Ussd.active || !ensureCall()) return
-        if (UssdService.instance == null) { askAccessibility(); return }
-        Ussd.run(this, "Offres", Store.cfg(this, "k_offres", "#359#"), Store.cfg(this, "k_rep1", "1"), Ussd.MODE_MENU, "menu")
-        if (page == Page.OFFERS) show(Page.OFFERS)
-    }
-
-    private fun startOffer(num: String, label: String) {
-        val replies = listOf(Store.cfg(this, "k_rep1", "1"), num, Store.cfg(this, "k_repfin", "1"))
-            .filter { it.isNotBlank() }.joinToString(",")
-        Ussd.run(this, label, Store.cfg(this, "k_offres", "#359#"), replies, Ussd.MODE_RESULT, "offer")
-        if (page == Page.HOME) show(Page.HOME)
-    }
-
-    /** Relit le forfait restant de l'offre choisie (en silence). */
-    private fun refreshOffer(force: Boolean) {
-        val num = Store.get(this, "sel_num")
-        if (num.isEmpty() || Ussd.active || !hasCall() || UssdService.instance == null) return
-        if (!force && System.currentTimeMillis() - Store.getLong(this, "t_offer") < 300_000L) return
-        startOffer(num, Store.get(this, "sel_label"))
-    }
-
-    private fun pickOffer(m: MenuItem) {
-        if (Ussd.active || !ensureCall()) return
-        if (UssdService.instance == null) { askAccessibility(); return }
-        Store.put(this, "sel_num", m.num)
-        Store.put(this, "sel_label", m.label)
-        Store.put(this, "r_offer", "")
-        Store.putLong(this, "t_offer", 0L)
-        show(Page.HOME)
-        startOffer(m.num, m.label)
-    }
-
     private fun askAccessibility() {
         Ui.dialog(this, AlertDialog.Builder(this)
             .setTitle("Accessibilité requise")
-            .setMessage("Pour lire les offres sans afficher les menus, activez « Yas USSD » dans les services d'accessibilité.")
+            .setMessage("Pour lire les offres sans afficher les menus du téléphone, activez « Yas USSD » dans les services d'accessibilité.")
             .setPositiveButton("Activer") { _, _ -> startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
             .setNegativeButton("Plus tard", null))
     }
@@ -296,7 +361,13 @@ class MainActivity : Activity() {
         list.setPadding(0, dp(20), 0, dp(24))
 
         val items = Store.menu(this)
-        val loadingMenu = Ussd.active && Ussd.runningKey == "menu"
+        val loadingMenu = Ussd.isBusy("menu")
+        val menuErr = Store.get(this, "e_menu")
+        if (menuErr.isNotEmpty() && !loadingMenu) {
+            val e = Ui.text(this, "⚠ $menuErr", 13f, Ui.BAD, true)
+            e.setPadding(dp(4), 0, dp(4), dp(12))
+            list.addView(e)
+        }
         if (items.isEmpty()) {
             val box = Ui.card(this)
             box.setPadding(dp(20), dp(20), dp(20), dp(20))
@@ -350,7 +421,7 @@ class MainActivity : Activity() {
         return row
     }
 
-    // ───────────────────────── boîte de résultat (erreurs, menu illisible) ─────────────────────────
+    // ───────────────────────── boîte de résultat (code libre) ─────────────────────────
 
     private fun handleUnseen() {
         if (Store.get(this, "unseen") == "1") {
