@@ -65,6 +65,9 @@ object Ussd {
     var onResult: (() -> Unit)? = null
     private var title = ""
     private var mode = MODE_RESULT
+    private var key = ""
+    /** Clé de l'opération en cours (« solde », « offer », « menu »), vide si aucune. */
+    @Volatile var runningKey = ""
     private var dialed = false
     private val timeout = Runnable { finish("Délai dépassé : aucune réponse de l'opérateur.") }
 
@@ -85,10 +88,12 @@ object Ussd {
         return out
     }
 
-    fun run(ctx: Context, title: String, code: String, replies: String, mode: Int = MODE_RESULT) {
+    fun run(ctx: Context, title: String, code: String, replies: String, mode: Int = MODE_RESULT, key: String = "") {
         app = ctx.applicationContext
         this.title = title
         this.mode = mode
+        this.key = key
+        runningKey = key
         lastSig = ""
         queue.clear()
         replies.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach { queue.addLast(it) }
@@ -135,7 +140,11 @@ object Ussd {
         }
         dialed = true
         main.removeCallbacks(timeout)
-        if (active) main.postDelayed(timeout, 40000)
+        if (active) {
+            main.postDelayed(timeout, 35000)
+            // Cache la fenêtre USSD du système pendant que l'appli répond toute seule.
+            UssdService.instance?.showOverlay()
+        }
         val i = Intent(Intent.ACTION_CALL, Uri.fromParts("tel", code, null))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         phoneAccount(subId)?.let { i.putExtra(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, it) }
@@ -158,8 +167,9 @@ object Ussd {
         main.removeCallbacks(timeout)
         active = false
         queue.clear()
+        UssdService.instance?.hideOverlay()
 
-        // Mode « liste d'offres » : on mémorise le menu ; sinon (ou si rien n'a pu être lu) on affiche le texte brut.
+        // show = true : on affiche le texte brut dans une boîte de dialogue (erreur, menu illisible, code libre).
         var show = true
         if (mode == MODE_MENU) {
             val items = parseMenu(text)
@@ -167,11 +177,19 @@ object Ussd {
                 Store.saveMenu(app, items)
                 show = false
             }
+        } else if (key.isNotEmpty()) {
+            // Résultat silencieux : affiché directement sur l'accueil.
+            Store.put(app, "r_$key", text)
+            Store.putLong(app, "t_$key", System.currentTimeMillis())
+            show = false
         }
-        Store.put(app, "last_text", text)
-        Store.put(app, "last_title", title)
-        Store.putLong(app, "last_time", System.currentTimeMillis())
+        if (show) {
+            Store.put(app, "last_text", text)
+            Store.put(app, "last_title", title)
+            Store.putLong(app, "last_time", System.currentTimeMillis())
+        }
         Store.put(app, "unseen", if (show) "1" else "0")
+        runningKey = ""
 
         if (dialed) {
             dialed = false

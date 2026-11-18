@@ -112,7 +112,7 @@ class SettingsActivity : Activity() {
         c4.addView(Ui.row(this, "Lancer un autre code", "Code libre, avec réponses automatiques facultatives") { freeCode() })
         root.addView(c4)
 
-        val ver = Ui.text(this, "Yas USSD 2.0", 12f, Ui.MUTED)
+        val ver = Ui.text(this, "Yas USSD 2.1", 12f, Ui.MUTED)
         ver.setPadding(dp(6), dp(24), 0, 0)
         root.addView(ver)
 

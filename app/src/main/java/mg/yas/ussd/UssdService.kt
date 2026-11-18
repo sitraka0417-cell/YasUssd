@@ -2,11 +2,18 @@ package mg.yas.ussd
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.graphics.PixelFormat
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.Gravity
+import android.view.View
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
 
 class UssdService : AccessibilityService() {
     companion object { @Volatile var instance: UssdService? = null }
@@ -21,7 +28,50 @@ class UssdService : AccessibilityService() {
     }
 
     override fun onServiceConnected() { instance = this }
-    override fun onUnbind(intent: Intent?): Boolean { instance = null; return super.onUnbind(intent) }
+    override fun onUnbind(intent: Intent?): Boolean { instance = null; removeOverlayNow(); return super.onUnbind(intent) }
+
+    // ── Écran de chargement posé par-dessus la fenêtre USSD du système ──
+    private var overlay: View? = null
+    private val hideRunnable = Runnable { removeOverlayNow() }
+
+    fun showOverlay() {
+        h.removeCallbacks(hideRunnable)
+        if (overlay != null) return
+        try {
+            val d = resources.displayMetrics.density
+            val box = LinearLayout(this)
+            box.orientation = LinearLayout.VERTICAL
+            box.gravity = Gravity.CENTER
+            box.setBackgroundColor(0xFF0D1117.toInt())
+            box.addView(ProgressBar(this), LinearLayout.LayoutParams((40 * d).toInt(), (40 * d).toInt()))
+            val tv = TextView(this)
+            tv.text = "Mise à jour en cours…"
+            tv.setTextColor(0xFFF1F3F7.toInt())
+            tv.textSize = 16f
+            tv.setPadding(0, (18 * d).toInt(), 0, 0)
+            box.addView(tv)
+            val lp = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.OPAQUE)
+            getSystemService(WindowManager::class.java).addView(box, lp)
+            overlay = box
+        } catch (_: Exception) { overlay = null }
+    }
+
+    /** Retire l'écran de chargement après un court délai, le temps que la fenêtre USSD se ferme. */
+    fun hideOverlay() {
+        h.removeCallbacks(hideRunnable)
+        h.postDelayed(hideRunnable, 500)
+    }
+
+    private fun removeOverlayNow() {
+        h.removeCallbacks(hideRunnable)
+        val o = overlay ?: return
+        overlay = null
+        try { getSystemService(WindowManager::class.java).removeView(o) } catch (_: Exception) {}
+    }
     override fun onInterrupt() {}
 
     override fun onAccessibilityEvent(e: AccessibilityEvent?) {
@@ -71,10 +121,10 @@ class UssdService : AccessibilityService() {
             edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
             h.postDelayed({ send?.performAction(AccessibilityNodeInfo.ACTION_CLICK) }, 300)
         } else {
-            Ussd.finish(msg)
             val b = cancel ?: send
             if (b != null) b.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             else performGlobalAction(GLOBAL_ACTION_BACK)
+            Ussd.finish(msg)
         }
     }
 }
