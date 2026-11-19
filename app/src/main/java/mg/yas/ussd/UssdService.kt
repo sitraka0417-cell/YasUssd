@@ -3,7 +3,12 @@ package mg.yas.ussd
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.content.res.ColorStateList
+import android.animation.ValueAnimator
+import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Bundle
@@ -18,7 +23,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.FrameLayout
 import android.widget.ImageView
-import android.widget.ProgressBar
+import android.view.animation.LinearInterpolator
 
 /**
  * Pilote la fenêtre USSD du système pendant qu'un écran de chargement (propre à l'appli) la recouvre.
@@ -290,13 +295,11 @@ class UssdService : AccessibilityService() {
                 iv.setImageBitmap(shot)
                 box.addView(iv, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                 val dim = View(this)
-                dim.setBackgroundColor(0x660D1117)
+                dim.setBackgroundColor(0x330D1117)
                 box.addView(dim, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             }
 
-            val pb = ProgressBar(this)
-            pb.indeterminateTintList = ColorStateList.valueOf(0xFFFFC72C.toInt())
-            box.addView(pb, FrameLayout.LayoutParams(px(46), px(46), Gravity.CENTER))
+            box.addView(SpinnerView(this), FrameLayout.LayoutParams(px(56), px(56), Gravity.CENTER))
 
             val lp = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
@@ -323,5 +326,34 @@ class UssdService : AccessibilityService() {
         val o = overlay ?: return
         overlay = null
         try { getSystemService(WindowManager::class.java).removeView(o) } catch (_: Exception) {}
+    }
+}
+
+/** Cercle jaune qui tourne, dessiné à la main : ne dépend d'aucun thème. */
+private class SpinnerView(c: Context) : View(c) {
+    private val arc = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; color = 0xFFFFC72C.toInt()
+    }
+    private val track = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE; color = 0x33FFFFFF
+    }
+    private var angle = 0f
+    private val anim = ValueAnimator.ofFloat(0f, 360f).apply {
+        duration = 900
+        repeatCount = ValueAnimator.INFINITE
+        interpolator = LinearInterpolator()
+        addUpdateListener { angle = it.animatedValue as Float; invalidate() }
+    }
+
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); anim.start() }
+    override fun onDetachedFromWindow() { anim.cancel(); super.onDetachedFromWindow() }
+
+    override fun onDraw(canvas: Canvas) {
+        val sw = width * 0.09f
+        arc.strokeWidth = sw
+        track.strokeWidth = sw
+        val r = RectF(sw, sw, width - sw, height - sw)
+        canvas.drawArc(r, 0f, 360f, false, track)
+        canvas.drawArc(r, angle, 100f, false, arc)
     }
 }

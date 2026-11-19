@@ -68,7 +68,8 @@ object Alerts {
         if (exp != null) {
             Store.putLong(c, "exp", exp)
             if (exp > now && Store.getLong(c, "exp_set") != exp) {
-                val at = maxOf(exp - 24L * 3600_000L, now + 30_000L)
+                val lead = if (exp - now > 48L * 3600_000L) 24L * 3600_000L else 2L * 3600_000L
+                val at = maxOf(exp - lead, now + 30_000L)
                 val pi = PendingIntent.getBroadcast(c, 8,
                     Intent(c, ReminderReceiver::class.java)
                         .putExtra("id", 2)

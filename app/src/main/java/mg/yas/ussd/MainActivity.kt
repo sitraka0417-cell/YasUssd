@@ -69,6 +69,10 @@ class MainActivity : Activity() {
         val w = frame.width
         val h = frame.height
         if (w <= 0 || h <= 0) return null
+        // L'accueil vient souvent d'être reconstruit : on force la mise en page, sinon la capture est vide (noire).
+        frame.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY))
+        frame.layout(frame.left, frame.top, frame.left + w, frame.top + h)
         val small = Bitmap.createBitmap(maxOf(w / 16, 1), maxOf(h / 16, 1), Bitmap.Config.ARGB_8888)
         val c = Canvas(small)
         c.scale(small.width.toFloat() / w, small.height.toFloat() / h)
