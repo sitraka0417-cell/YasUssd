@@ -8,6 +8,8 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
+import android.telephony.ServiceState
 import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
 import android.telephony.SubscriptionManager
@@ -98,7 +100,7 @@ object Ussd {
     const val MODE_MENU = 1
 
     /** menuAt : indice de la réponse qui s'envoie sur l'écran de la liste des offres (la liste est alors mémorisée au passage). */
-    class Job(val title: String, val code: String, val replies: String, val mode: Int = MODE_RESULT, val key: String = "", val menuAt: Int = -1)
+    class Job(val title: String, val code: String, val replies: String, val mode: Int = MODE_RESULT, val key: String = "", val menuAt: Int = -1, val bg: Boolean = false)
 
     private val main = Handler(Looper.getMainLooper())
     private lateinit var app: Context
@@ -115,6 +117,12 @@ object Ussd {
     /** Une fenêtre USSD du système est attendue : le service d'accessibilité doit la piloter. */
     @Volatile var capturing = false
     @Volatile var runningKey = ""
+
+    /** Appelé une fois à la fin du lot (utilisé par la mise à jour périodique en arrière-plan). */
+    var afterAll: (() -> Unit)? = null
+
+    fun soldeJob(c: Context, bg: Boolean = false) =
+        Job("Solde", Store.cfg(c, "k_solde", "#357#"), "", MODE_RESULT, "solde", -1, bg)
 
     /** Appelé (sur le thread principal) à chaque changement : début/fin d'un code, fin du lot. */
     var onChange: (() -> Unit)? = null
@@ -181,7 +189,33 @@ object Ussd {
             return
         }
         val subId = Store.subId(app)
+        val pre = preflight(subId)
+        if (pre != null) { finishJob(pre, false, false); return }
         if (queue.isEmpty()) single(j, subId) else dial(j, subId)
+    }
+
+    /** Vérifie mode avion, SIM et réseau avant de lancer un code : message clair au lieu d'attendre un délai. */
+    @SuppressLint("MissingPermission")
+    private fun preflight(subId: Int): String? {
+        try {
+            if (Settings.Global.getInt(app.contentResolver, Settings.Global.AIRPLANE_MODE_ON, 0) == 1)
+                return "Mode avion activé : désactivez-le pour mettre à jour."
+            var tm = app.getSystemService(TelephonyManager::class.java)
+            val precise = subId >= 0 || tm.phoneCount <= 1
+            if (!precise) return null
+            if (subId >= 0) tm = tm.createForSubscriptionId(subId)
+            val sim = tm.simState
+            if (sim == TelephonyManager.SIM_STATE_ABSENT) return "Aucune SIM détectée."
+            if (sim == TelephonyManager.SIM_STATE_PIN_REQUIRED || sim == TelephonyManager.SIM_STATE_PUK_REQUIRED)
+                return "SIM verrouillée : saisissez le code PIN."
+            val st = tm.serviceState
+            if (st != null) {
+                if (st.state == ServiceState.STATE_POWER_OFF) return "Radio éteinte : vérifiez le mode avion."
+                if (st.state == ServiceState.STATE_OUT_OF_SERVICE) return "Pas de réseau : le téléphone n'est pas connecté à l'opérateur."
+                if (st.state == ServiceState.STATE_EMERGENCY_ONLY) return "Réseau limité (appels d'urgence seulement) : pas de signal de l'opérateur."
+            }
+        } catch (_: Exception) {}
+        return null
     }
 
     private fun armTimeout(ms: Long) {
@@ -217,6 +251,7 @@ object Ussd {
     /** Code avec menus : on compose le code, le service d'accessibilité répond et lit, un écran de chargement masque tout. */
     @SuppressLint("MissingPermission")
     private fun dial(j: Job, subId: Int) {
+        if (j.bg) { finishJob("Réponse directe indisponible en arrière-plan.", false, false); return }
         val svc = UssdService.instance
         if (svc == null) {
             finishJob("Service d'accessibilité désactivé : activez « Yas USSD » dans les services d'accessibilité.", false)
@@ -266,7 +301,7 @@ object Ussd {
     /** Appelé par le service d'accessibilité s'il n'arrive pas à répondre. */
     fun fail(msg: String) = finishJob(msg, false)
 
-    private fun finishJob(textIn: String, okIn: Boolean) {
+    private fun finishJob(textIn: String, okIn: Boolean, countFail: Boolean = true) {
         val j = cur ?: return
         cur = null
         main.removeCallbacks(timeout)
@@ -295,9 +330,12 @@ object Ussd {
                 Store.put(app, "r_${j.key}", text)
                 Store.putLong(app, "t_${j.key}", now)
                 Store.put(app, "e_${j.key}", "")
-            } else {
+                Store.putLong(app, "f_${j.key}", 0L)
+                if (j.key == "offer") try { Alerts.onOffer(app, text) } catch (_: Exception) {}
+            } else if (!j.bg) {
                 Store.put(app, "e_${j.key}", err)
                 Store.putLong(app, "te_${j.key}", now)
+                if (countFail) Store.putLong(app, "f_${j.key}", Store.getLong(app, "f_${j.key}") + 1)
             }
         } else {
             // Code libre lancé depuis les paramètres : le résultat s'affiche dans une boîte de dialogue.
@@ -310,6 +348,7 @@ object Ussd {
         Journal.add(if (ok) "✔ ${j.title} : ${short(text)}" else "✘ ${j.title} : ${short(err)}")
         // Si le code a échoué alors qu'une fenêtre USSD est restée ouverte, on la ferme.
         if (wasCapturing && !ok) UssdService.instance?.dismissNow()
+        YasWidget.refresh(app)
         onChange?.invoke()
         main.postDelayed({ next() }, 100)
     }
@@ -322,14 +361,18 @@ object Ussd {
         Store.putLong(app, "last_end", System.currentTimeMillis())
         Journal.flush(app)
         val svc = UssdService.instance
-        if (dialed) {
-            dialed = false
+        val wasDialed = dialed
+        dialed = false
+        if (wasDialed) {
             try {
                 (svc ?: app).startActivity(Intent(app, MainActivity::class.java)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP))
             } catch (e: Exception) { Journal.add("Retour à l'appli impossible : ${e.message}") }
+            svc?.end()
         }
-        svc?.end()
+        val cb = afterAll
+        afterAll = null
+        cb?.invoke()
         onChange?.invoke()
     }
 }

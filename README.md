@@ -1,4 +1,4 @@
-# Yas USSD 3.0 (v4)
+# Yas USSD 4.0 (v5)
 App Android (Kotlin, sans bibliothèque externe).
 
 - **Accueil** : cartes *Solde* (`#357#`) et *forfait restant*, puis la liste des offres juste dessous (un appui sur une offre la sélectionne).
@@ -11,3 +11,10 @@ App Android (Kotlin, sans bibliothèque externe).
 
 Build : GitHub Actions (onglet Actions > Build APK > Artifacts > YasUssd-debug-apk).
 Après installation : activer « Yas USSD » dans Paramètres > Accessibilité (à refaire si Android le désactive après une mise à jour).
+
+## Nouveautés 4.0
+- Vérification avant chaque code : mode avion, SIM absente/verrouillée, pas de réseau → message clair, pas d'attente.
+- Mise à jour du solde en arrière-plan (15/30/60 min, silencieuse) même appli fermée ; le forfait se met à jour à l'ouverture.
+- Rappel automatique 24 h avant la fin du forfait (date lue dans le texte) et alerte « forfait faible ».
+- Après 3 échecs de suite, la mise à jour automatique d'un code attend 30 min.
+- Widget d'accueil (solde + forfait), sans consommation propre.

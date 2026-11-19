@@ -51,6 +51,7 @@ class MainActivity : Activity() {
         Ussd.onChange = { runOnUiThread { onUssdChange() } }
         show(page)
         handleUnseen()
+        Auto.schedule(this)
         autoRefresh()
     }
 
@@ -97,15 +98,20 @@ class MainActivity : Activity() {
     private fun autoRefresh() {
         if (page != Page.HOME || Ussd.active || !hasCall()) return
         if (System.currentTimeMillis() - Store.getLong(this, "last_end") < 20_000L) return
-        refreshAll()
+        refreshAll(true)
     }
 
-    private fun refreshAll() {
+    /** Après 3 échecs de suite, la mise à jour automatique d'un code attend 30 min (le bouton ↻ reste libre). */
+    private fun backoff(key: String): Boolean =
+        Store.getLong(this, "f_$key") >= 3 && System.currentTimeMillis() - Store.getLong(this, "te_$key") < 30 * 60_000L
+
+    private fun refreshAll(auto: Boolean = false) {
         if (Ussd.active) { busyToast(); return }
         if (!ensureCall()) return
         val list = mutableListOf(soldeJob())
         if (UssdService.instance != null) (offerJob() ?: menuJob()).let { list.add(it) }
-        Ussd.start(this, list)
+        val todo = if (auto) list.filter { !backoff(it.key) } else list
+        if (todo.isNotEmpty()) Ussd.start(this, todo)
     }
 
     private fun refreshSolde() {
@@ -207,7 +213,7 @@ class MainActivity : Activity() {
         }
         val offres = bigCard(
             R.drawable.ic_list, if (label.isEmpty()) "Offres" else label, body, offerText,
-            if (label.isEmpty()) "" else oSub, oErr, false,
+            if (label.isEmpty()) "" else oSub + expSuffix(), oErr, false,
             { openOffers() }, { refreshOffer() })
 
         root.addView(solde, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(20) })
@@ -223,6 +229,11 @@ class MainActivity : Activity() {
         b.isClickable = true
         b.setOnClickListener { onClick() }
         return b
+    }
+
+    private fun expSuffix(): String {
+        val e = Store.getLong(this, "exp")
+        return if (e > 0) " · expire le ${short.format(Date(e))}" else ""
     }
 
     private fun clean(t: String) = t.trim().replace(Regex("\n{2,}"), "\n")

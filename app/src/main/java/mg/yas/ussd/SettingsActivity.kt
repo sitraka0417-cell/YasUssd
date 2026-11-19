@@ -94,6 +94,26 @@ class SettingsActivity : Activity() {
         c2.addView(hint)
         root.addView(c2)
 
+        // Automatique
+        root.addView(Ui.section(this, "Automatique"))
+        val c5 = Ui.card(this)
+        val bgV = arrayOf("0", "15", "30", "60")
+        val bgL = arrayOf("Désactivé", "Toutes les 15 min", "Toutes les 30 min", "Toutes les heures")
+        val bgCur = bgL[bgV.indexOf(Store.get(this, "bg_min", "30")).coerceAtLeast(0)]
+        c5.addView(Ui.row(this, "Solde en arrière-plan", "$bgCur · l'appli peut rester fermée") {
+            choose("Solde en arrière-plan", bgL, bgV, "bg_min", "30") { Auto.schedule(this) }
+        })
+        val lowV = arrayOf("0", "100", "200", "500", "1024")
+        val lowL = arrayOf("Désactivée", "Moins de 100 Mo", "Moins de 200 Mo", "Moins de 500 Mo", "Moins de 1 Go")
+        val lowCur = lowL[lowV.indexOf(Store.get(this, "low_mb", "200")).coerceAtLeast(0)]
+        c5.addView(Ui.row(this, "Alerte forfait faible", lowCur) {
+            choose("Alerte forfait faible", lowL, lowV, "low_mb", "200") {}
+        })
+        val h5 = Ui.text(this, "Le solde se met à jour seul, en silence. Le forfait se met à jour à l'ouverture de l'appli (il demande l'écran). La date de fin de forfait et la quantité restante (premier montant en Go/Mo) sont lues dans le texte du forfait : un rappel part 24 h avant l'échéance.", 12f, Ui.MUTED)
+        h5.setPadding(dp(16), dp(12), dp(16), dp(8))
+        c5.addView(h5)
+        root.addView(c5)
+
         // Rappel
         root.addView(Ui.section(this, "Rappel de fin de forfait"))
         val c3 = Ui.card(this)
@@ -110,7 +130,7 @@ class SettingsActivity : Activity() {
         c4.addView(Ui.row(this, "Journal technique", "Ce que l'appli a lu et envoyé lors des dernières mises à jour") { showJournal() })
         root.addView(c4)
 
-        val ver = Ui.text(this, "Yas USSD 3.0", 12f, Ui.MUTED)
+        val ver = Ui.text(this, "Yas USSD 4.0", 12f, Ui.MUTED)
         ver.setPadding(dp(6), dp(24), 0, 0)
         root.addView(ver)
 
@@ -119,6 +139,18 @@ class SettingsActivity : Activity() {
         sv.isVerticalScrollBarEnabled = false
         sv.addView(root)
         setContentView(sv)
+    }
+
+    private fun choose(title: String, labels: Array<String>, values: Array<String>, key: String, def: String, after: () -> Unit) {
+        val cur = values.indexOf(Store.get(this, key, def)).coerceAtLeast(0)
+        Ui.dialog(this, AlertDialog.Builder(this)
+            .setTitle(title)
+            .setSingleChoiceItems(labels, cur) { d, which ->
+                Store.put(this, key, values[which])
+                d.dismiss()
+                after()
+                build()
+            })
     }
 
     private fun field(label: String, key: String, def: String, phone: Boolean): View {
