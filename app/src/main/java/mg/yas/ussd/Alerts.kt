@@ -5,17 +5,13 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.appwidget.AppWidgetManager
-import android.appwidget.AppWidgetProvider
 import android.content.BroadcastReceiver
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.Manifest
 import android.os.Handler
 import android.os.Looper
-import android.widget.RemoteViews
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -138,38 +134,4 @@ class RefreshReceiver : BroadcastReceiver() {
 
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(c: Context, i: Intent) { Auto.schedule(c) }
-}
-
-/** Widget d'accueil : affiche les derniers résultats enregistrés, ne lance aucun code et ne consomme rien par lui-même. */
-class YasWidget : AppWidgetProvider() {
-    override fun onUpdate(c: Context, m: AppWidgetManager, ids: IntArray) {
-        for (id in ids) m.updateAppWidget(id, build(c))
-    }
-
-    companion object {
-        private val short = SimpleDateFormat("dd/MM HH:mm", Locale.FRANCE)
-
-        fun build(c: Context): RemoteViews {
-            val v = RemoteViews(c.packageName, R.layout.widget)
-            val s = Store.get(c, "r_solde").trim()
-            val o = Store.get(c, "r_offer").trim()
-            val t = Store.getLong(c, "t_solde")
-            v.setTextViewText(R.id.w_solde, if (s.isEmpty()) "—" else s)
-            v.setTextViewText(R.id.w_offer_title, Store.get(c, "sel_label").ifEmpty { "Forfait" })
-            v.setTextViewText(R.id.w_offer, if (o.isEmpty()) "—" else o)
-            v.setTextViewText(R.id.w_time, if (t > 0) "Solde du ${short.format(Date(t))}" else "Ouvrez l'appli pour actualiser")
-            val pi = PendingIntent.getActivity(c, 0, Intent(c, MainActivity::class.java),
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-            v.setOnClickPendingIntent(R.id.w_root, pi)
-            return v
-        }
-
-        fun refresh(c: Context) {
-            try {
-                val m = AppWidgetManager.getInstance(c)
-                val ids = m.getAppWidgetIds(ComponentName(c, YasWidget::class.java))
-                for (id in ids) m.updateAppWidget(id, build(c))
-            } catch (_: Exception) {}
-        }
-    }
 }

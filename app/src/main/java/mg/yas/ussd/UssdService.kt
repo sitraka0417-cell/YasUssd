@@ -3,6 +3,7 @@ package mg.yas.ussd
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.content.res.ColorStateList
+import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Bundle
@@ -15,7 +16,8 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
-import android.widget.LinearLayout
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.ProgressBar
 
 /**
@@ -90,14 +92,14 @@ class UssdService : AccessibilityService() {
     // ───────────────────────── cycle d'un code ─────────────────────────
 
     /** Début d'un code à menus : on recouvre l'écran puis on surveille la fenêtre USSD. */
-    fun begin(title: String) {
+    fun begin(title: String, shot: Bitmap? = null) {
         waiting = false
         sentMsg = ""
         attempts = 0
         emptyPolls = 0
         quiet = 0
         quietMsg = ""
-        showOverlay(title)
+        showOverlay(shot)
         h.removeCallbacks(poll)
         h.postDelayed(poll, 250)
     }
@@ -270,7 +272,7 @@ class UssdService : AccessibilityService() {
         h.postDelayed(hideRun, ms)
     }
 
-    private fun showOverlay(title: String) {
+    private fun showOverlay(shot: Bitmap?) {
         h.removeCallbacks(hideRun)
         h.removeCallbacks(failsafe)
         h.postDelayed(failsafe, 60000)
@@ -278,14 +280,23 @@ class UssdService : AccessibilityService() {
         try {
             val d = resources.displayMetrics.density
             fun px(v: Int) = (v * d).toInt()
-            val box = LinearLayout(this)
-            box.orientation = LinearLayout.VERTICAL
-            box.gravity = Gravity.CENTER
+            val box = FrameLayout(this)
             box.setBackgroundColor(0xFF0D1117.toInt())
+
+            // Capture de l'accueil, floutée (réduite puis agrandie) : l'écran garde son apparence pendant le chargement.
+            if (shot != null) {
+                val iv = ImageView(this)
+                iv.scaleType = ImageView.ScaleType.FIT_XY
+                iv.setImageBitmap(shot)
+                box.addView(iv, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                val dim = View(this)
+                dim.setBackgroundColor(0x660D1117)
+                box.addView(dim, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            }
 
             val pb = ProgressBar(this)
             pb.indeterminateTintList = ColorStateList.valueOf(0xFFFFC72C.toInt())
-            box.addView(pb, LinearLayout.LayoutParams(px(46), px(46)))
+            box.addView(pb, FrameLayout.LayoutParams(px(46), px(46), Gravity.CENTER))
 
             val lp = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,

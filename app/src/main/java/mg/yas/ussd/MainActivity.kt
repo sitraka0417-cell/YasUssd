@@ -7,6 +7,8 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
@@ -49,6 +51,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         Ussd.onChange = { runOnUiThread { onUssdChange() } }
+        Ussd.snapshotProvider = { blurredSnapshot() }
         show(page)
         handleUnseen()
         Auto.schedule(this)
@@ -58,6 +61,20 @@ class MainActivity : Activity() {
     override fun onPause() {
         super.onPause()
         Ussd.onChange = null
+        Ussd.snapshotProvider = null
+    }
+
+    /** Capture de l'accueil, réduite 16 fois : une fois étirée par l'écran de chargement, elle apparaît floutée. */
+    private fun blurredSnapshot(): Bitmap? {
+        val w = frame.width
+        val h = frame.height
+        if (w <= 0 || h <= 0) return null
+        val small = Bitmap.createBitmap(maxOf(w / 16, 1), maxOf(h / 16, 1), Bitmap.Config.ARGB_8888)
+        val c = Canvas(small)
+        c.scale(small.width.toFloat() / w, small.height.toFloat() / h)
+        frame.draw(c)
+        // Deuxième réduction pour un flou plus doux.
+        return Bitmap.createScaledBitmap(small, maxOf(small.width / 2, 1), maxOf(small.height / 2, 1), true)
     }
 
     private var homeScroll: ScrollView? = null

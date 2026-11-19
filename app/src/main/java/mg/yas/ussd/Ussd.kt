@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -120,6 +121,9 @@ object Ussd {
 
     /** Appelé une fois à la fin du lot (utilisé par la mise à jour périodique en arrière-plan). */
     var afterAll: (() -> Unit)? = null
+
+    /** Fournit une capture floutée de l'écran affiché (l'accueil) pour l'arrière-plan de l'écran de chargement. */
+    var snapshotProvider: (() -> Bitmap?)? = null
 
     fun soldeJob(c: Context, bg: Boolean = false) =
         Job("Solde", Store.cfg(c, "k_solde", "#357#"), "", MODE_RESULT, "solde", -1, bg)
@@ -260,7 +264,8 @@ object Ussd {
         dialed = true
         capturing = true
         armTimeout(45000)
-        svc.begin(j.title)
+        val shot = try { snapshotProvider?.invoke() } catch (_: Exception) { null }
+        svc.begin(j.title, shot)
         val i = Intent(Intent.ACTION_CALL, Uri.fromParts("tel", j.code, null))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         phoneAccount(subId)?.let { i.putExtra(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, it) }
@@ -348,7 +353,6 @@ object Ussd {
         Journal.add(if (ok) "✔ ${j.title} : ${short(text)}" else "✘ ${j.title} : ${short(err)}")
         // Si le code a échoué alors qu'une fenêtre USSD est restée ouverte, on la ferme.
         if (wasCapturing && !ok) UssdService.instance?.dismissNow()
-        YasWidget.refresh(app)
         onChange?.invoke()
         main.postDelayed({ next() }, 100)
     }

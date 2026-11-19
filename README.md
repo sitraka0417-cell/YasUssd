@@ -17,4 +17,3 @@ Après installation : activer « Yas USSD » dans Paramètres > Accessibilité (
 - Mise à jour du solde en arrière-plan (15/30/60 min, silencieuse) même appli fermée ; le forfait se met à jour à l'ouverture.
 - Rappel automatique 24 h avant la fin du forfait (date lue dans le texte) et alerte « forfait faible ».
 - Après 3 échecs de suite, la mise à jour automatique d'un code attend 30 min.
-- Widget d'accueil (solde + forfait), sans consommation propre.
