@@ -265,6 +265,7 @@ object Ussd {
         capturing = true
         armTimeout(45000)
         val shot = try { snapshotProvider?.invoke() } catch (_: Exception) { null }
+        Journal.add("Capture de l'accueil pour le fond flou : ${if (shot != null) "ok" else "indisponible"}")
         svc.begin(j.title, shot)
         val i = Intent(Intent.ACTION_CALL, Uri.fromParts("tel", j.code, null))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

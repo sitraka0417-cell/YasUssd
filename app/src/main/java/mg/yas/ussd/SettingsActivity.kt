@@ -130,7 +130,7 @@ class SettingsActivity : Activity() {
         c4.addView(Ui.row(this, "Journal technique", "Ce que l'appli a lu et envoyé lors des dernières mises à jour") { showJournal() })
         root.addView(c4)
 
-        val ver = Ui.text(this, "Yas USSD 4.0", 12f, Ui.MUTED)
+        val ver = Ui.text(this, "Yas USSD 4.1", 12f, Ui.MUTED)
         ver.setPadding(dp(6), dp(24), 0, 0)
         root.addView(ver)
 

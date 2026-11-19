@@ -10,8 +10,17 @@ android {
         applicationId = "mg.yas.ussd"
         minSdk = 26
         targetSdk = 34
-        versionCode = 5
-        versionName = "4.0"
+        versionCode = 6
+        versionName = "4.1"
+    }
+    // Clé debug fixe (dans le dépôt) : chaque build a la même signature, donc Android accepte la mise à jour sans désinstaller.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
     buildTypes { release { isMinifyEnabled = false } }
     compileOptions {

@@ -1,4 +1,4 @@
-# Yas USSD 4.0 (v5)
+# Yas USSD 4.1 (v5)
 App Android (Kotlin, sans bibliothèque externe).
 
 - **Accueil** : cartes *Solde* (`#357#`) et *forfait restant*, puis la liste des offres juste dessous (un appui sur une offre la sélectionne).
